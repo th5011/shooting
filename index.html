@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Shooter</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #05010f;
+    display: flex; justify-content: center; align-items: center;
+    height: 100vh; overflow: hidden;
+    font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+  }
+  #wrap { position: relative; }
+  canvas {
+    display: block;
+    border-radius: 12px;
+    box-shadow: 0 0 40px rgba(140, 80, 255, 0.5), 0 0 100px rgba(0, 200, 255, 0.2);
+  }
+  #hud {
+    position: absolute; top: 14px; left: 18px; right: 18px;
+    display: flex; justify-content: space-between;
+    color: #fff; font-size: 20px; font-weight: bold;
+    text-shadow: 0 0 8px #0ff, 0 0 16px #f0f;
+    pointer-events: none;
+  }
+  .overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    background: rgba(5, 0, 20, 0.7);
+    border-radius: 12px;
+    color: #fff; text-align: center;
+  }
+  .overlay h1 {
+    font-size: 52px; margin-bottom: 16px;
+    background: linear-gradient(90deg, #ff4fd8, #7b5cff, #00e5ff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 12px rgba(180, 100, 255, 0.8));
+  }
+  .overlay p { font-size: 18px; margin: 6px 0; color: #cfd8ff; }
+  .overlay button {
+    margin-top: 26px; padding: 14px 42px;
+    font-size: 22px; font-weight: bold; color: #fff;
+    border: none; border-radius: 40px; cursor: pointer;
+    background: linear-gradient(90deg, #ff4fd8, #7b5cff, #00e5ff);
+    box-shadow: 0 0 20px rgba(160, 90, 255, 0.8);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .overlay button:hover { transform: scale(1.08); box-shadow: 0 0 34px rgba(0, 229, 255, 0.9); }
+  .hidden { display: none; }
+  kbd {
+    background: #2a1f55; border: 1px solid #7b5cff; border-radius: 4px;
+    padding: 2px 8px; color: #fff;
+  }
+  .item-icon {
+    display: inline-block; width: 22px; height: 22px; line-height: 22px;
+    border-radius: 50%; background: #00e5ff; color: #12043a; font-weight: bold;
+    box-shadow: 0 0 10px #00e5ff;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="480" height="720"></canvas>
+  <div id="hud"><span id="score">SCORE 0</span><span id="best">BEST 0</span></div>
+
+  <div id="startScreen" class="overlay">
+    <h1>SPACE SHOOTER</h1>
+    <p><kbd>←</kbd> <kbd>→</kbd> 이동 &nbsp; <kbd>Space</kbd> 발사</p>
+    <p>적을 맞히면 +10점!</p>
+    <p><span class="item-icon">+</span> 아이템을 먹으면 비행기가 늘어나요 (최대 5대)</p>
+    <p>레벨이 오를수록 적이 강해져요</p>
+    <button id="startBtn">게임 시작</button>
+  </div>
+
+  <div id="overScreen" class="overlay hidden">
+    <h1>GAME OVER</h1>
+    <p id="finalScore">점수: 0</p>
+    <p id="finalLevel">도달 레벨: 1</p>
+    <p id="finalBest">최고 점수: 0</p>
+    <button id="restartBtn">다시하기</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const startScreen = document.getElementById('startScreen');
+const overScreen = document.getElementById('overScreen');
+
+const LEVEL_TIME = 15;      // 15초마다 레벨 업
+const MAX_SHIPS = 5;        // 최대 비행기 수
+const SHIP_OFFSETS = [0, -48, 48, -96, 96]; // 편대 배치 (가운데 → 좌우)
+const LEVEL_MESSAGES = {
+  2: '지그재그 적 등장!',
+  3: '단단한 적 등장!',
+  4: '적이 총을 쏜다!',
+  5: '적이 무리지어 온다!'
+};
+
+let best = 0;
+try { best = Number(localStorage.getItem('spaceShooterBest')) || 0; } catch (e) {}
+bestEl.textContent = 'BEST ' + best;
+
+// ---------- 배경: 별 (3겹 시차 스크롤) ----------
+const stars = [];
+for (let i = 0; i < 160; i++) {
+  const layer = Math.floor(Math.random() * 3);
+  stars.push({
+    x: Math.random() * W, y: Math.random() * H,
+    r: 0.5 + layer * 0.6 + Math.random() * 0.5,
+    speed: 0.3 + layer * 0.9,
+    hue: [200, 280, 50][Math.floor(Math.random() * 3)],
+    tw: Math.random() * Math.PI * 2
+  });
+}
+
+// 성운 (부드러운 색 구름)
+const nebulas = [
+  { x: 100, y: 150, r: 220, c: 'rgba(255, 60, 200, 0.18)', speed: 0.15 },
+  { x: 380, y: 420, r: 260, c: 'rgba(80, 90, 255, 0.20)', speed: 0.1 },
+  { x: 200, y: 650, r: 200, c: 'rgba(0, 220, 255, 0.14)', speed: 0.12 }
+];
+
+// 행성
+const planet = { x: 390, y: 120, r: 46, speed: 0.05 };
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a0228');
+  g.addColorStop(0.5, '#150640');
+  g.addColorStop(1, '#030112');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  for (const n of nebulas) {
+    n.y += n.speed;
+    if (n.y - n.r > H) n.y = -n.r;
+    const ng = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
+    ng.addColorStop(0, n.c);
+    ng.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = ng;
+    ctx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
+  }
+
+  planet.y += planet.speed;
+  if (planet.y - planet.r * 2 > H) planet.y = -planet.r * 2;
+  const pg = ctx.createRadialGradient(planet.x - 15, planet.y - 15, 5, planet.x, planet.y, planet.r);
+  pg.addColorStop(0, '#ffb86b');
+  pg.addColorStop(0.6, '#d9488f');
+  pg.addColorStop(1, '#3a0d4f');
+  ctx.fillStyle = pg;
+  ctx.beginPath(); ctx.arc(planet.x, planet.y, planet.r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 210, 160, 0.55)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(planet.x, planet.y, planet.r * 1.7, planet.r * 0.35, -0.35, 0, Math.PI * 2);
+  ctx.stroke();
+
+  for (const s of stars) {
+    s.y += s.speed * speedFactor();
+    if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+    s.tw += 0.05;
+    const a = 0.5 + Math.sin(s.tw) * 0.4;
+    ctx.fillStyle = `hsla(${s.hue}, 100%, 85%, ${a})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// ---------- 게임 상태 ----------
+let player, bullets, enemies, enemyBullets, items, particles, texts, banner;
+let score, running, elapsed, level, spawnTimer, itemTimer, shootCooldown, lastTime;
+const keys = {};
+
+function speedFactor() { return running ? 1 + (elapsed / LEVEL_TIME) * 0.3 : 1; }
+
+function reset() {
+  player = { x: W / 2, y: H - 80, w: 44, h: 50, speed: 6, ships: 1, invincible: 0 };
+  bullets = []; enemies = []; enemyBullets = []; items = []; particles = []; texts = [];
+  banner = null;
+  score = 0; elapsed = 0; level = 1;
+  spawnTimer = 0; itemTimer = 8; shootCooldown = 0;
+  scoreEl.textContent = 'SCORE 0';
+}
+
+function start() {
+  reset();
+  running = true;
+  startScreen.classList.add('hidden');
+  overScreen.classList.add('hidden');
+  lastTime = performance.now();
+  showBanner('LEVEL 1', '준비!');
+}
+
+function gameOver() {
+  running = false;
+  explode(player.x, player.y, '#00e5ff', 60);
+  if (score > best) {
+    best = score;
+    try { localStorage.setItem('spaceShooterBest', best); } catch (e) {}
+    bestEl.textContent = 'BEST ' + best;
+  }
+  document.getElementById('finalScore').textContent = '점수: ' + score;
+  document.getElementById('finalLevel').textContent = '도달 레벨: ' + level;
+  document.getElementById('finalBest').textContent = '최고 점수: ' + best;
+  setTimeout(() => overScreen.classList.remove('hidden'), 600);
+}
+
+// 편대에 있는 각 비행기 위치 (가운데가 본체, 나머지는 살짝 뒤쪽)
+function shipPositions() {
+  return SHIP_OFFSETS.slice(0, player.ships).map((o, i) => ({
+    x: player.x + o,
+    y: player.y + (i === 0 ? 0 : 14),
+    scale: i === 0 ? 1 : 0.75
+  }));
+}
+
+function formationHalfWidth() {
+  return Math.abs(SHIP_OFFSETS[player.ships - 1]) + player.w / 2;
+}
+
+// ---------- 입력 ----------
+window.addEventListener('keydown', e => {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) e.preventDefault();
+  keys[e.key] = true;
+  if (!running && e.key === 'Enter') start();
+});
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+document.getElementById('startBtn').onclick = e => { e.target.blur(); start(); };
+document.getElementById('restartBtn').onclick = e => { e.target.blur(); start(); };
+
+// ---------- 생성 ----------
+const enemyColors = [
+  ['#ff4fd8', '#7a0f6b'],
+  ['#ffcc33', '#a3420b'],
+  ['#7bff6b', '#13693a'],
+  ['#ff5a5a', '#6b0f1f']
+];
+
+function spawnEnemy(xOverride) {
+  const roll = Math.random();
+  let type = 'normal';
+  if (level >= 3 && roll < 0.18) type = 'tank';
+  else if (level >= 2 && roll < 0.45) type = 'zigzag';
+
+  const tank = type === 'tank';
+  const size = tank ? 58 : 30 + Math.random() * 18;
+  const [c1, c2] = tank ? ['#b48cff', '#3a1580'] : enemyColors[Math.floor(Math.random() * enemyColors.length)];
+  const x = xOverride ?? size / 2 + Math.random() * (W - size);
+  const hp = tank ? 3 + Math.floor(level / 4) : 1;
+
+  enemies.push({
+    type, x, baseX: x, y: -size, size, c1, c2,
+    hp, maxHp: hp,
+    vy: (tank ? 1.1 : 1.6 + Math.random() * 1.2) * speedFactor(),
+    vx: type === 'normal' ? (Math.random() - 0.5) * 1.2 : 0,
+    t: Math.random() * Math.PI * 2,
+    rot: 0, flash: 0,
+    // 레벨 4부터 일부 적이 총을 쏨 (레벨이 오를수록 더 많이)
+    shooter: level >= 4 && Math.random() < Math.min(0.25 + (level - 4) * 0.08, 0.6),
+    shootTimer: 0.8 + Math.random() * 1.2
+  });
+}
+
+function spawnWave() {
+  // 레벨 5부터 여러 마리가 한 번에 등장
+  if (level >= 5 && Math.random() < 0.35) {
+    const n = Math.min(3 + Math.floor((level - 5) / 2), 5);
+    const gap = W / (n + 1);
+    for (let i = 1; i <= n; i++) spawnEnemy(gap * i);
+  } else {
+    spawnEnemy();
+  }
+}
+
+function spawnItem(x, y) {
+  items.push({ x, y, vy: 1.8, t: 0 });
+}
+
+function explode(x, y, color, count = 24) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 1 + Math.random() * 4;
+    particles.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 1, decay: 0.015 + Math.random() * 0.025,
+      r: 1.5 + Math.random() * 2.5, color
+    });
+  }
+}
+
+function popText(x, y, text, color) {
+  texts.push({ x, y, text, color, life: 1 });
+}
+
+function showBanner(title, sub) {
+  banner = { title, sub, life: 2.2 };
+}
+
+// ---------- 그리기 ----------
+function drawShip(x, y, scale, alpha) {
+  const w = player.w * scale, h = player.h * scale;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // 엔진 불꽃
+  const flame = (14 + Math.random() * 10) * scale;
+  const fg = ctx.createLinearGradient(x, y + h / 2 - 6, x, y + h / 2 + flame);
+  fg.addColorStop(0, '#fff');
+  fg.addColorStop(0.3, '#00e5ff');
+  fg.addColorStop(1, 'rgba(123, 92, 255, 0)');
+  ctx.fillStyle = fg;
+  ctx.beginPath();
+  ctx.moveTo(x - 8 * scale, y + h / 2 - 6);
+  ctx.lineTo(x + 8 * scale, y + h / 2 - 6);
+  ctx.lineTo(x, y + h / 2 + flame);
+  ctx.fill();
+
+  ctx.shadowColor = '#00e5ff';
+  ctx.shadowBlur = 20;
+  // 날개
+  ctx.fillStyle = scale < 1 ? '#5a8cff' : '#7b5cff';
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6 * scale);
+  ctx.lineTo(x + w / 2, y + h / 2);
+  ctx.lineTo(x + w / 4, y + h / 2 - 4);
+  ctx.lineTo(x - w / 4, y + h / 2 - 4);
+  ctx.lineTo(x - w / 2, y + h / 2);
+  ctx.closePath();
+  ctx.fill();
+  // 동체
+  const bg = ctx.createLinearGradient(x - 10, 0, x + 10, 0);
+  bg.addColorStop(0, '#5ad1ff');
+  bg.addColorStop(0.5, '#ffffff');
+  bg.addColorStop(1, '#5ad1ff');
+  ctx.fillStyle = bg;
+  ctx.beginPath();
+  ctx.moveTo(x, y - h / 2);
+  ctx.lineTo(x + 10 * scale, y + h / 2 - 6);
+  ctx.lineTo(x - 10 * scale, y + h / 2 - 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  // 조종석
+  ctx.fillStyle = '#ff4fd8';
+  ctx.beginPath();
+  ctx.ellipse(x, y - 2 * scale, 4 * scale, 8 * scale, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPlayer() {
+  // 피격 직후 무적 시간에는 깜빡임
+  const alpha = player.invincible > 0 && Math.floor(player.invincible * 12) % 2 === 0 ? 0.3 : 1;
+  const ships = shipPositions();
+  // 본체가 맨 위에 그려지도록 역순으로
+  for (let i = ships.length - 1; i >= 0; i--) drawShip(ships[i].x, ships[i].y, ships[i].scale, alpha);
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.rotate(e.rot);
+  ctx.shadowColor = e.c1;
+  ctx.shadowBlur = 18;
+  const r = e.size / 2;
+  const g = ctx.createRadialGradient(0, 0, 2, 0, 0, r);
+  g.addColorStop(0, '#fff');
+  g.addColorStop(0.35, e.flash > 0 ? '#ffffff' : e.c1);
+  g.addColorStop(1, e.c2);
+  ctx.fillStyle = g;
+
+  ctx.beginPath();
+  if (e.type === 'tank') {
+    // 육각형 장갑 기체
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    }
+  } else if (e.type === 'zigzag') {
+    // 다이아몬드 기체
+    ctx.moveTo(0, -r); ctx.lineTo(r * 0.8, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.8, 0);
+  } else {
+    // 별 모양 외계 기체
+    for (let i = 0; i < 12; i++) {
+      const ang = (i / 12) * Math.PI * 2;
+      const rr = i % 2 === 0 ? r : r * 0.6;
+      ctx.lineTo(Math.cos(ang) * rr, Math.sin(ang) * rr);
+    }
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = e.shooter ? '#ff2a2a' : '#1a0630';
+  ctx.beginPath(); ctx.arc(-r * 0.25, -r * 0.1, r * 0.14, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(r * 0.25, -r * 0.1, r * 0.14, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  // 단단한 적 체력바
+  if (e.maxHp > 1) {
+    const bw = e.size * 0.9;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(e.x - bw / 2, e.y - r - 10, bw, 5);
+    ctx.fillStyle = '#7bff6b';
+    ctx.fillRect(e.x - bw / 2, e.y - r - 10, bw * (e.hp / e.maxHp), 5);
+  }
+}
+
+function drawBullet(b) {
+  ctx.save();
+  ctx.shadowColor = '#ffee55';
+  ctx.shadowBlur = 14;
+  const g = ctx.createLinearGradient(b.x, b.y - 10, b.x, b.y + 10);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(1, '#ffb800');
+  ctx.fillStyle = g;
+  ctx.fillRect(b.x - 2.5, b.y - 10, 5, 20);
+  ctx.restore();
+}
+
+function drawEnemyBullet(b) {
+  ctx.save();
+  ctx.shadowColor = '#ff3355';
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#ff6b8a';
+  ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(b.x, b.y, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawItem(it) {
+  const pulse = 1 + Math.sin(it.t * 6) * 0.12;
+  const r = 14 * pulse;
+  ctx.save();
+  ctx.shadowColor = '#00e5ff';
+  ctx.shadowBlur = 24;
+  const g = ctx.createRadialGradient(it.x, it.y, 2, it.x, it.y, r);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(0.5, '#00e5ff');
+  g.addColorStop(1, '#2a5cff');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(it.x, it.y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#12043a';
+  ctx.fillRect(it.x - 7, it.y - 2, 14, 4);
+  ctx.fillRect(it.x - 2, it.y - 7, 4, 14);
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTexts() {
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 18px Segoe UI, Malgun Gothic, sans-serif';
+  for (const t of texts) {
+    ctx.globalAlpha = Math.max(t.life, 0);
+    ctx.fillStyle = t.color;
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHudExtras() {
+  ctx.fillStyle = 'rgba(200, 210, 255, 0.85)';
+  ctx.font = 'bold 14px Segoe UI, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('LEVEL ' + level, W / 2, 30);
+
+  // 남은 비행기 수
+  ctx.textAlign = 'left';
+  ctx.fillText('SHIPS', 18, H - 18);
+  for (let i = 0; i < MAX_SHIPS; i++) {
+    ctx.fillStyle = i < player.ships ? '#00e5ff' : 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    const bx = 72 + i * 18, by = H - 23;
+    ctx.moveTo(bx, by - 7); ctx.lineTo(bx + 6, by + 6); ctx.lineTo(bx - 6, by + 6);
+    ctx.fill();
+  }
+
+  if (banner) {
+    const a = Math.min(banner.life, 1);
+    ctx.globalAlpha = a;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 44px Segoe UI, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = '#ff4fd8';
+    ctx.shadowBlur = 20;
+    ctx.fillText(banner.title, W / 2, H / 2 - 20);
+    ctx.font = 'bold 20px Segoe UI, Malgun Gothic, sans-serif';
+    ctx.fillStyle = '#ffd36b';
+    ctx.fillText(banner.sub, W / 2, H / 2 + 16);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- 업데이트 ----------
+function hitPlayer(x, y) {
+  if (player.invincible > 0) return false;
+  explode(x, y, '#00e5ff', 40);
+  if (player.ships > 1) {
+    player.ships--;
+    player.invincible = 1.5;
+    popText(x, y - 30, '비행기 -1', '#ff6b8a');
+    return false;
+  }
+  gameOver();
+  return true;
+}
+
+function update(dt) {
+  elapsed += dt;
+  const f = dt * 60; // 60fps 기준 보정
+
+  // 레벨 업
+  const newLevel = Math.floor(elapsed / LEVEL_TIME) + 1;
+  if (newLevel > level) {
+    level = newLevel;
+    showBanner('LEVEL ' + level, LEVEL_MESSAGES[level] || '더 빠르고 더 많이!');
+  }
+  if (banner) { banner.life -= dt; if (banner.life <= 0) banner = null; }
+  if (player.invincible > 0) player.invincible -= dt;
+
+  // 이동 (편대 전체가 화면 안에 있도록)
+  if (keys['ArrowLeft']) player.x -= player.speed * f;
+  if (keys['ArrowRight']) player.x += player.speed * f;
+  const half = formationHalfWidth();
+  player.x = Math.max(half, Math.min(W - half, player.x));
+
+  // 발사: 모든 비행기가 함께 쏨
+  shootCooldown -= dt;
+  if (keys[' '] && shootCooldown <= 0) {
+    for (const s of shipPositions()) {
+      bullets.push({ x: s.x, y: s.y - player.h * s.scale / 2, vy: -10 });
+    }
+    shootCooldown = 0.18;
+  }
+
+  for (const b of bullets) b.y += b.vy * f;
+  bullets = bullets.filter(b => b.y > -20);
+
+  // 적 생성: 레벨이 오를수록 간격이 짧아짐
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    spawnWave();
+    spawnTimer = Math.max(0.22, 1.0 - (elapsed / LEVEL_TIME) * 0.1);
+  }
+
+  // 아이템: 일정 시간마다 위에서 떨어짐
+  itemTimer -= dt;
+  if (itemTimer <= 0) {
+    spawnItem(30 + Math.random() * (W - 60), -20);
+    itemTimer = 10 + Math.random() * 6;
+  }
+
+  for (const e of enemies) {
+    e.t += dt;
+    e.y += e.vy * f;
+    if (e.type === 'zigzag') {
+      e.x = e.baseX + Math.sin(e.t * 3) * 60;
+      e.x = Math.max(e.size / 2, Math.min(W - e.size / 2, e.x));
+    } else {
+      e.x += e.vx * f;
+      if (e.x < e.size / 2 || e.x > W - e.size / 2) e.vx *= -1;
+    }
+    e.rot += (e.type === 'tank' ? 0.01 : 0.03) * f;
+    if (e.flash > 0) e.flash -= dt;
+
+    // 적 총알: 내 비행기 쪽을 조준
+    if (e.shooter && e.y > 0 && e.y < H * 0.7) {
+      e.shootTimer -= dt;
+      if (e.shootTimer <= 0) {
+        const dx = player.x - e.x, dy = player.y - e.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const sp = 3 + level * 0.2;
+        enemyBullets.push({ x: e.x, y: e.y + e.size / 2, vx: dx / d * sp, vy: dy / d * sp });
+        e.shootTimer = Math.max(0.9, 2.2 - level * 0.1);
+      }
+    }
+  }
+
+  for (const b of enemyBullets) { b.x += b.vx * f; b.y += b.vy * f; }
+  enemyBullets = enemyBullets.filter(b => b.y < H + 10 && b.x > -10 && b.x < W + 10);
+
+  for (const it of items) { it.y += it.vy * f; it.t += dt; }
+  items = items.filter(it => it.y < H + 20);
+
+  // 총알 ↔ 적 충돌
+  for (const e of enemies) {
+    for (const b of bullets) {
+      if (!b.dead && Math.abs(b.x - e.x) < e.size / 2 && Math.abs(b.y - e.y) < e.size / 2 + 10) {
+        b.dead = true;
+        e.hp--;
+        e.flash = 0.08;
+        if (e.hp <= 0) {
+          e.dead = true;
+          const pts = e.type === 'tank' ? 30 : 10;
+          score += pts;
+          scoreEl.textContent = 'SCORE ' + score;
+          explode(e.x, e.y, e.c1, e.type === 'tank' ? 40 : 24);
+          popText(e.x, e.y, '+' + pts, '#ffd36b');
+          // 적을 잡으면 가끔 아이템 드롭 (단단한 적은 확률 높음)
+          if (Math.random() < (e.type === 'tank' ? 0.35 : 0.06)) spawnItem(e.x, e.y);
+        }
+        break;
+      }
+    }
+  }
+  bullets = bullets.filter(b => !b.dead);
+  enemies = enemies.filter(e => !e.dead && e.y < H + e.size);
+
+  // 아이템 획득
+  const ships = shipPositions();
+  for (const it of items) {
+    if (ships.some(s => Math.hypot(it.x - s.x, it.y - s.y) < 34)) {
+      it.dead = true;
+      explode(it.x, it.y, '#00e5ff', 16);
+      if (player.ships < MAX_SHIPS) {
+        player.ships++;
+        popText(it.x, it.y - 20, '비행기 +1!', '#00e5ff');
+      } else {
+        score += 50;
+        scoreEl.textContent = 'SCORE ' + score;
+        popText(it.x, it.y - 20, '+50', '#00e5ff');
+      }
+    }
+  }
+  items = items.filter(it => !it.dead);
+
+  // 적 / 적 총알 ↔ 내 비행기 충돌
+  for (const s of ships) {
+    const shipR = player.w * s.scale / 2;
+    for (const e of enemies) {
+      if (!e.dead && Math.hypot(e.x - s.x, e.y - s.y) < e.size / 2 + shipR - 10) {
+        e.dead = true;
+        explode(e.x, e.y, e.c1);
+        if (hitPlayer(s.x, s.y)) return;
+      }
+    }
+    for (const b of enemyBullets) {
+      if (!b.dead && Math.hypot(b.x - s.x, b.y - s.y) < shipR - 6) {
+        b.dead = true;
+        if (hitPlayer(s.x, s.y)) return;
+      }
+    }
+  }
+  enemies = enemies.filter(e => !e.dead);
+  enemyBullets = enemyBullets.filter(b => !b.dead);
+}
+
+function updateEffects(dt) {
+  const f = dt * 60;
+  for (const p of particles) {
+    p.x += p.vx * f; p.y += p.vy * f;
+    p.vx *= 0.97; p.vy *= 0.97;
+    p.life -= p.decay * f;
+  }
+  particles = particles.filter(p => p.life > 0);
+  for (const t of texts) { t.y -= 0.8 * f; t.life -= dt; }
+  texts = texts.filter(t => t.life > 0);
+}
+
+function loop(now) {
+  const dt = Math.min((now - (lastTime || now)) / 1000, 0.05);
+  lastTime = now;
+
+  drawBackground();
+  if (running) update(dt);
+  updateEffects(dt);
+
+  for (const it of items) drawItem(it);
+  for (const b of bullets) drawBullet(b);
+  for (const e of enemies) drawEnemy(e);
+  for (const b of enemyBullets) drawEnemyBullet(b);
+  if (running) { drawPlayer(); drawHudExtras(); }
+  drawParticles();
+  drawTexts();
+
+  requestAnimationFrame(loop);
+}
+
+reset();
+running = false;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
